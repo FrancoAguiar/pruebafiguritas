@@ -955,7 +955,7 @@
         }
 
 
-        /* Cámara v14: recuadro real, sin scan falso al cerrar */
+        /* Cámara v15: marco para el dorso completo + foco real en código superior derecho */
         .camera-frame {
             aspect-ratio: 3 / 4;
             background:
@@ -971,25 +971,24 @@
             animation: scanLineBox 1.55s ease-in-out infinite alternate;
         }
         .camera-target {
-            left: 8%;
-            right: 8%;
-            top: 39%;
+            left: 9%;
+            right: 9%;
+            top: 8%;
             bottom: auto;
-            height: 22%;
-            border: 2px solid rgba(198,255,61,.82);
+            height: 74%;
+            border: 2px solid rgba(255,255,255,.48);
             border-radius: 8px;
             box-shadow:
                 0 0 0 999px rgba(0,0,0,.30),
-                0 0 22px rgba(198,255,61,.20),
-                inset 0 0 0 1px rgba(255,255,255,.12);
+                0 0 22px rgba(198,255,61,.12),
+                inset 0 0 0 1px rgba(255,255,255,.08);
         }
         .camera-target::before {
-            content: "Poné el código dentro del recuadro";
+            content: "Alineá el código grande acá";
             position: absolute;
-            left: 50%;
+            right: 2%;
             top: -30px;
-            transform: translateX(-50%);
-            color: rgba(255,255,255,.88);
+            color: rgba(255,255,255,.92);
             font-size: .76rem;
             font-weight: 800;
             white-space: nowrap;
@@ -998,18 +997,23 @@
         .camera-target::after {
             content: "";
             position: absolute;
-            inset: -8px;
-            border-radius: 12px;
-            border: 1px dashed rgba(255,255,255,.28);
+            top: 4%;
+            right: 3%;
+            width: 42%;
+            height: 18%;
+            border-radius: 10px;
+            border: 3px solid rgba(198,255,61,.92);
+            box-shadow: 0 0 24px rgba(198,255,61,.24), inset 0 0 0 1px rgba(0,0,0,.18);
+            background: rgba(198,255,61,.04);
         }
         @keyframes scanLineBox {
-            from { transform: translateY(-38px); opacity: .45; }
-            to { transform: translateY(38px); opacity: 1; }
+            from { transform: translateY(-34px); opacity: .45; }
+            to { transform: translateY(34px); opacity: 1; }
         }
         .camera-scan-line {
-            left: 10%;
-            right: 10%;
-            top: 50%;
+            left: 54%;
+            right: 12%;
+            top: 19%;
             transition: opacity .18s ease;
         }
         .camera-last-read {
@@ -1131,7 +1135,7 @@
             <!-- VIEW: CÁMARA -->
             <div id="view-camera" class="view-section">
                 <h3 style="margin-bottom: 10px; color: var(--gold);">Cámara</h3>
-                <p class="camera-help">Poné <strong>una figurita</strong> dentro del recuadro y enfocá el código impreso, tipo <strong>ARG-01</strong>, <strong>MEX15</strong> o <strong>FWC-1</strong>. La app te avisa si ya la tenés o si es nueva.</p>
+                <p class="camera-help">Poné <strong>una figurita de dorso</strong> dentro del marco y alineá el código grande de arriba a la derecha, tipo <strong>FWC7</strong>, <strong>ARG-01</strong> o <strong>MEX15</strong>. La app te avisa si ya la tenés o si es nueva.</p>
 
                 <div class="camera-box">
                     <div class="camera-actions">
@@ -1671,7 +1675,7 @@ const app = {
             await video.play();
 
             document.querySelector('.camera-frame')?.classList.add('scanning');
-            this.setCameraStatus('<strong>Cámara activa.</strong> Poné UNA figurita dentro del recuadro y mantenela quieta.', '');
+            this.setCameraStatus('<strong>Cámara activa.</strong> Poné el dorso de UNA figurita y alineá el código grande arriba a la derecha.', '');
             this.showToast('Cámara activa');
             this.playVibration(20);
 
@@ -1723,30 +1727,38 @@ const app = {
         try {
             const vw = video.videoWidth || 1280;
             const vh = video.videoHeight || 720;
-            // Crop exactamente sobre el recuadro rectangular visible.
-            // Esto evita que el OCR lea otros textos/códigos del dorso.
-            const cropW = Math.floor(vw * 0.84);
-            const cropH = Math.floor(vh * 0.22);
-            const sx = Math.floor((vw - cropW) / 2);
-            const sy = Math.floor((vh - cropH) * 0.48);
 
-            canvas.width = Math.min(1280, cropW * 1.35);
+            // v15: en el dorso real el código grande está arriba a la derecha.
+            // Recortamos SOLO esa zona para no leer “005460”, textos legales o Panini.
+            const cropW = Math.floor(vw * 0.46);
+            const cropH = Math.floor(vh * 0.18);
+            const sx = Math.floor(vw * 0.49);
+            const sy = Math.floor(vh * 0.10);
+
+            canvas.width = Math.min(1500, cropW * 3);
             canvas.height = Math.floor(canvas.width * cropH / cropW);
             const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            ctx.imageSmoothingEnabled = false;
             ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, canvas.width, canvas.height);
 
+            // Alto contraste para códigos blancos sobre fondo oscuro o negros sobre gris.
             const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
             const d = img.data;
+            let avg = 0;
+            for (let i = 0; i < d.length; i += 4) avg += (d[i] * .299 + d[i+1] * .587 + d[i+2] * .114);
+            avg = avg / (d.length / 4);
+            const threshold = Math.max(105, Math.min(170, avg * 0.92));
             for (let i = 0; i < d.length; i += 4) {
                 const gray = (d[i] * .299 + d[i+1] * .587 + d[i+2] * .114);
-                const v = gray > 142 ? 255 : 0;
+                const v = gray > threshold ? 255 : 0;
                 d[i] = d[i+1] = d[i+2] = v;
             }
             ctx.putImageData(img, 0, 0);
 
-            this.setCameraStatus('<strong>Escaneando recuadro...</strong> Mantené el código quieto 1 segundo.', '');
+            this.setCameraStatus('<strong>Escaneando código superior...</strong> Mantené quieta la figurita 1 segundo.', '');
             const res = await Tesseract.recognize(canvas, 'eng', {
                 tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789- ',
+                preserve_interword_spaces: '1',
                 logger: () => {}
             });
             const text = res?.data?.text || '';
@@ -1754,7 +1766,7 @@ const app = {
             if (codes.length) {
                 this.handleCameraCodes(codes);
             } else {
-                this.setCameraStatus('<strong>No leí ningún código todavía.</strong> Poné el código dentro del recuadro, con buena luz y sin reflejo.', 'warn');
+                this.setCameraStatus('<strong>No leí ningún código todavía.</strong> Alineá el código grande de arriba a la derecha dentro del recuadro verde.', 'warn');
             }
         } catch (err) {
             console.error('OCR error:', err);
@@ -1776,12 +1788,16 @@ const app = {
 
     pickBestCameraCode(codes) {
         const valid = [];
-        codes.forEach(raw => {
+        codes.forEach((raw, idx) => {
             const sticker = this.findStickerByToken(raw);
             if (!sticker) return;
             const code = this.normalizeInputCode(raw);
             const normalizedSticker = this.normalizeInputCode(sticker.code || sticker.id);
-            const score = String(raw).replace(/\s+/g,'').length + (code === normalizedSticker ? 20 : 0);
+            const prefix = String(normalizedSticker).split('-')[0];
+            let score = 100 - idx;
+            if (code === normalizedSticker) score += 35;
+            if (['FWC','CC','00'].includes(prefix)) score += 25;
+            if (/^[A-Z]{2,4}-?\d{1,2}$/.test(String(raw).toUpperCase().replace(/\s+/g,''))) score += 15;
             valid.push({ code: sticker.code || normalizedSticker, score, sticker });
         });
         valid.sort((a,b) => b.score - a.score);
@@ -1929,25 +1945,34 @@ const app = {
     },
 
     extractCodesFromText(text) {
-        const raw = String(text || '').toUpperCase().replace(/[–—_]/g, '-');
+        const raw = String(text || '').toUpperCase()
+            .replace(/[–—_]/g, '-')
+            .replace(/O/g, '0')
+            .replace(/[|]/g, '1');
         const compact = raw.replace(/[^A-Z0-9-]+/g, ' ');
         const glued = raw.replace(/[^A-Z0-9-]/g, '');
         const prefixes = [...new Set(this.state.albumData.map(s => String(s.prefix || s.code || s.id || '').split('-')[0].replace(/\d+/g,'').toUpperCase()).filter(Boolean))];
-        const found = new Set();
+        const found = [];
+        const add = (code) => {
+            const normalized = this.normalizeInputCode(code);
+            if (!this.findStickerByToken(normalized)) return;
+            if (!found.includes(normalized)) found.push(normalized);
+        };
 
-        prefixes.forEach(prefix => {
-            if (prefix === '00') return;
+        // En el dorso real suele venir FWC7 / FWC 7 arriba a la derecha. Priorizamos ese patrón.
+        ['FWC','CC', ...prefixes.filter(p => !['FWC','CC','00'].includes(p))].forEach(prefix => {
+            if (!prefix || prefix === '00') return;
             const p = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             const spaced = new RegExp(`\\b${p}\\s*-?\\s*0?([0-9]{1,3})\\b`, 'g');
             let m;
-            while ((m = spaced.exec(compact)) !== null) found.add(`${prefix}-${parseInt(m[1],10)}`);
+            while ((m = spaced.exec(compact)) !== null) add(`${prefix}-${parseInt(m[1],10)}`);
 
             const gluedRe = new RegExp(`${p}-?0?([0-9]{1,3})`, 'g');
-            while ((m = gluedRe.exec(glued)) !== null) found.add(`${prefix}-${parseInt(m[1],10)}`);
+            while ((m = gluedRe.exec(glued)) !== null) add(`${prefix}-${parseInt(m[1],10)}`);
         });
 
-        if (/\b00\b/.test(compact) || /^00/.test(glued)) found.add('00');
-        return [...found].filter(code => this.findStickerByToken(code)).slice(0, 3);
+        if (/\b00\b/.test(compact) || /^00/.test(glued)) add('00');
+        return found.slice(0, 1);
     },
 
     processQuickAdd(action) {
