@@ -1069,11 +1069,12 @@
                         <button class="btn-secondary" onclick="app.stopCameraScanner()" style="margin-bottom:0;">Cerrar cámara</button>
                     </div>
                     <div class="camera-frame">
-                        <video id="camera-video" playsinline muted></video>
+                        <video id="camera-video" playsinline webkit-playsinline muted autoplay></video>
+                        <canvas id="camera-canvas" style="display:none;"></canvas>
                         <div class="camera-target"></div>
                         <div class="camera-scan-line"></div>
                     </div>
-                    <div id="camera-status" class="camera-status">Cámara detenida.</div>
+                    <div id="camera-status" class="camera-status">Cámara detenida. Tocá “Abrir cámara” para empezar.</div>
                 </div>
 
                 <div class="camera-box">
@@ -1561,6 +1562,254 @@ const app = {
         this.playSound('click');
         this.closeModal();
         this.renderAlbum();
+    },
+
+    // =========================================
+    // CÁMARA / OCR ASISTIDO
+    // =========================================
+    setCameraStatus(message, type = '') {
+        const el = document.getElementById('camera-status');
+        if (!el) return;
+        el.className = `camera-status ${type || ''}`.trim();
+        el.innerHTML = message;
+    },
+
+    async startCameraScanner() {
+        const video = document.getElementById('camera-video');
+        if (!video) return;
+
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            this.setCameraStatus('<strong>Tu navegador no permite abrir cámara desde esta web.</strong> Probá en Chrome/Safari actualizado y con HTTPS.', 'err');
+            return;
+        }
+
+        if (!window.isSecureContext && location.hostname !== 'localhost') {
+            this.setCameraStatus('<strong>La cámara necesita HTTPS.</strong> Abrí la app desde el link seguro con https://', 'err');
+            return;
+        }
+
+        try {
+            this.stopCameraScanner(false);
+            this.setCameraStatus('<strong>Abriendo cámara...</strong> Aceptá el permiso del navegador.', '');
+
+            const constraints = {
+                audio: false,
+                video: {
+                    facingMode: { ideal: 'environment' },
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 }
+                }
+            };
+
+            this.cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
+            video.srcObject = this.cameraStream;
+            video.setAttribute('playsinline', 'true');
+            video.setAttribute('webkit-playsinline', 'true');
+            video.muted = true;
+            await video.play();
+
+            this.setCameraStatus('<strong>Cámara activa.</strong> Acercá el código tipo ARG-01 al centro. Si no lee, escribilo abajo.', '');
+            this.showToast('Cámara activa');
+            this.playVibration(20);
+
+            this.cameraBusy = false;
+            clearInterval(this.cameraTimer);
+            this.cameraTimer = setInterval(() => this.scanCameraFrame(), 2400);
+            setTimeout(() => this.scanCameraFrame(), 900);
+        } catch (err) {
+            console.error('Camera error:', err);
+            let msg = 'No pude abrir la cámara.';
+            if (err && err.name === 'NotAllowedError') msg = 'Permiso de cámara denegado. Revisá permisos del sitio en el navegador.';
+            if (err && err.name === 'NotFoundError') msg = 'No encontré una cámara disponible.';
+            if (err && err.name === 'NotReadableError') msg = 'La cámara está ocupada por otra app o pestaña.';
+            this.setCameraStatus(`<strong>${msg}</strong> También podés usar el campo manual.`, 'err');
+        }
+    },
+
+    stopCameraScanner(showMsg = true) {
+        clearInterval(this.cameraTimer);
+        this.cameraTimer = null;
+        this.cameraBusy = false;
+        const video = document.getElementById('camera-video');
+        if (this.cameraStream) {
+            this.cameraStream.getTracks().forEach(track => track.stop());
+            this.cameraStream = null;
+        }
+        if (video) {
+            video.pause();
+            video.srcObject = null;
+        }
+        if (showMsg) this.setCameraStatus('Cámara detenida. Tocá “Abrir cámara” para volver a escanear.', 'warn');
+    },
+
+    async scanCameraFrame() {
+        if (this.cameraBusy || !this.cameraStream) return;
+        const video = document.getElementById('camera-video');
+        const canvas = document.getElementById('camera-canvas');
+        if (!video || !canvas || video.readyState < 2) return;
+
+        if (!window.Tesseract) {
+            this.setCameraStatus('<strong>Cámara activa.</strong> OCR no cargó todavía. Escribí el código abajo si no lo detecta.', 'warn');
+            return;
+        }
+
+        this.cameraBusy = true;
+        try {
+            const vw = video.videoWidth || 1280;
+            const vh = video.videoHeight || 720;
+            const cropW = Math.floor(vw * 0.86);
+            const cropH = Math.floor(vh * 0.34);
+            const sx = Math.floor((vw - cropW) / 2);
+            const sy = Math.floor((vh - cropH) / 2);
+
+            canvas.width = Math.min(1100, cropW);
+            canvas.height = Math.floor(canvas.width * cropH / cropW);
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, canvas.width, canvas.height);
+
+            const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const d = img.data;
+            for (let i = 0; i < d.length; i += 4) {
+                const gray = (d[i] * .299 + d[i+1] * .587 + d[i+2] * .114);
+                const v = gray > 142 ? 255 : 0;
+                d[i] = d[i+1] = d[i+2] = v;
+            }
+            ctx.putImageData(img, 0, 0);
+
+            this.setCameraStatus('<strong>Leyendo código...</strong> Mantené la figurita quieta 1 segundo.', '');
+            const res = await Tesseract.recognize(canvas, 'eng', {
+                tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789- ',
+                logger: () => {}
+            });
+            const text = res?.data?.text || '';
+            const codes = this.extractCodesFromText(text);
+            if (codes.length) {
+                this.handleCameraCodes(codes);
+            } else {
+                this.setCameraStatus('<strong>No leí ningún código todavía.</strong> Acercá más la cámara o usá el campo manual.', 'warn');
+            }
+        } catch (err) {
+            console.error('OCR error:', err);
+            this.setCameraStatus('<strong>No pude leer el código automáticamente.</strong> Probá más luz o escribilo abajo.', 'warn');
+        } finally {
+            this.cameraBusy = false;
+        }
+    },
+
+    handleCameraCodes(codes) {
+        codes.forEach(code => this.addCameraScan(code, false));
+        this.renderCameraResults();
+    },
+
+    addCameraScan(rawCode, fromManual = false) {
+        const code = this.normalizeInputCode(rawCode);
+        const sticker = this.findStickerByToken(code);
+        if (!sticker) {
+            this.setCameraStatus(`<strong>${this.escapeCameraHTML(code)}</strong> no está en el álbum. Revisá si el OCR leyó mal.`, 'err');
+            return false;
+        }
+
+        const alreadyInList = this.cameraScans.some(s => s.id === sticker.id);
+        const u = this.getUserObj(sticker.id);
+        const status = u.owned ? 'owned' : 'new';
+        if (!alreadyInList) {
+            this.cameraScans.unshift({
+                id: sticker.id,
+                code: sticker.code,
+                name: sticker.name,
+                section: sticker.section,
+                status,
+                at: Date.now()
+            });
+            this.cameraScans = this.cameraScans.slice(0, 30);
+        }
+
+        if (status === 'owned') {
+            this.setCameraStatus(`<strong>${sticker.code} ya la tenés.</strong> Podés sumarla como repetida si es otra copia.`, 'warn');
+            this.playSound('dup');
+        } else {
+            this.setCameraStatus(`<strong>${sticker.code} es nueva. Qué bueno.</strong> Tocá “Marcar nuevas como tengo”.`, '');
+            this.playSound('tengo');
+        }
+        this.playVibration(status === 'owned' ? [20, 30, 20] : 25);
+        return true;
+    },
+
+    addManualCameraCodes() {
+        const input = document.getElementById('camera-manual-input');
+        if (!input || !input.value.trim()) return;
+        const codes = this.extractCodesFromText(input.value);
+        if (!codes.length) {
+            this.showToast('No encontré códigos válidos');
+            return;
+        }
+        let ok = 0;
+        codes.forEach(code => { if (this.addCameraScan(code, true)) ok++; });
+        input.value = '';
+        this.renderCameraResults();
+        this.showToast(`${ok} código(s) agregados`);
+    },
+
+    clearCameraScans() {
+        this.cameraScans = [];
+        this.renderCameraResults();
+        this.setCameraStatus('Lista limpia. Podés seguir escaneando.', '');
+    },
+
+    applyCameraScans(action) {
+        if (!this.cameraScans.length) {
+            this.showToast('No hay lecturas para aplicar');
+            return;
+        }
+        let count = 0;
+        this.cameraScans.forEach(item => {
+            const u = this.getUserObj(item.id);
+            if (action === 'tengo') {
+                if (!u.owned) {
+                    u.owned = true;
+                    count++;
+                }
+            } else if (action === 'repetida') {
+                u.owned = true;
+                u.duplicates = (u.duplicates || 0) + 1;
+                count++;
+            }
+            u.updatedAt = new Date().toISOString();
+        });
+        this.saveUser();
+        this.renderAlbum();
+        this.updateDashboard();
+        this.cameraScans = [];
+        this.renderCameraResults();
+        this.playSound(action === 'repetida' ? 'dup' : 'tengo');
+        this.showToast(action === 'repetida' ? `➕ ${count} repetidas sumadas` : `✅ ${count} nuevas marcadas`);
+        this.setCameraStatus('Cambios aplicados. Podés seguir escaneando.', '');
+    },
+
+    renderCameraResults() {
+        const box = document.getElementById('camera-results');
+        if (!box) return;
+        if (!this.cameraScans.length) {
+            box.innerHTML = '<p style="color:var(--gray);">Todavía no hay códigos detectados.</p>';
+            return;
+        }
+        box.innerHTML = this.cameraScans.map(item => {
+            const label = item.status === 'owned' ? 'Ya la tenés' : 'Nueva';
+            const cls = item.status === 'owned' ? 'owned' : 'new';
+            return `
+                <div class="camera-result">
+                    <div class="camera-result-main">
+                        <div class="camera-code">${this.escapeCameraHTML(item.code)}</div>
+                        <div class="camera-name">${this.escapeCameraHTML(item.name)} · ${this.escapeCameraHTML(item.section || '')}</div>
+                    </div>
+                    <span class="camera-pill ${cls}">${label}</span>
+                </div>
+            `;
+        }).join('');
+    },
+
+    escapeCameraHTML(str) {
+        return String(str ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
     },
 
     // =========================================
